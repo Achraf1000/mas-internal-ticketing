@@ -1,0 +1,322 @@
+IF DB_ID(N'mas_ticketing') IS NULL
+BEGIN
+    CREATE DATABASE [mas_ticketing];
+END
+GO
+
+USE [mas_ticketing];
+GO
+
+/* =========================================================
+   2) PRECHECK users (déjà existante)
+   ========================================================= */
+IF OBJECT_ID(N'dbo.users', N'U') IS NULL
+BEGIN
+    THROW 50001, 'La table dbo.users doit exister avant ce script.', 1;
+END
+GO
+
+/* =========================================================
+   3) departments
+   ========================================================= */
+IF OBJECT_ID(N'dbo.departments', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.departments (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_departments PRIMARY KEY,
+        code NVARCHAR(50) NOT NULL,
+        name NVARCHAR(255) NOT NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_departments_is_active DEFAULT (1),
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_departments_created_at DEFAULT (SYSUTCDATETIME()),
+        updated_at DATETIME2(3) NOT NULL CONSTRAINT DF_departments_updated_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT UQ_departments_code UNIQUE (code),
+        CONSTRAINT UQ_departments_name UNIQUE (name)
+    );
+END
+GO
+
+/* =========================================================
+   4) refresh_tokens
+   ========================================================= */
+IF OBJECT_ID(N'dbo.refresh_tokens', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.refresh_tokens (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_refresh_tokens PRIMARY KEY,
+        token_id NVARCHAR(36) NOT NULL,
+        user_id UNIQUEIDENTIFIER NOT NULL,
+        expires_at DATETIME2(3) NOT NULL,
+        revoked_at DATETIME2(3) NULL,
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_refresh_tokens_created_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT UQ_refresh_tokens_token_id UNIQUE (token_id),
+        CONSTRAINT FK_refresh_tokens_users FOREIGN KEY (user_id) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_refresh_tokens_user_id' AND object_id = OBJECT_ID(N'dbo.refresh_tokens'))
+    CREATE INDEX IX_refresh_tokens_user_id ON dbo.refresh_tokens(user_id);
+GO
+
+/* =========================================================
+   5) sla_policies
+   ========================================================= */
+IF OBJECT_ID(N'dbo.sla_policies', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.sla_policies (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_sla_policies PRIMARY KEY,
+        priority NVARCHAR(20) NOT NULL,
+        first_response_minutes INT NOT NULL,
+        resolution_minutes INT NOT NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_sla_policies_is_active DEFAULT (1),
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_sla_policies_created_at DEFAULT (SYSUTCDATETIME()),
+        updated_at DATETIME2(3) NOT NULL CONSTRAINT DF_sla_policies_updated_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT UQ_sla_policies_priority UNIQUE (priority),
+        CONSTRAINT CK_sla_policies_priority CHECK (priority IN (N'LOW',N'MEDIUM',N'HIGH',N'CRITICAL'))
+    );
+END
+GO
+
+/* =========================================================
+   6) tickets
+   ========================================================= */
+IF OBJECT_ID(N'dbo.tickets', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tickets (
+        id UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_tickets PRIMARY KEY DEFAULT NEWID(),
+        ticket_code NVARCHAR(64) NOT NULL,
+        title NVARCHAR(255) NOT NULL,
+        description NVARCHAR(MAX) NOT NULL,
+        category NVARCHAR(20) NOT NULL,
+        priority NVARCHAR(20) NOT NULL,
+        status NVARCHAR(20) NOT NULL CONSTRAINT DF_tickets_status DEFAULT (N'NEW'),
+        emitter_department_id INT NOT NULL,
+        target_department_id INT NOT NULL,
+        creator_id UNIQUEIDENTIFIER NOT NULL,
+        assignee_id UNIQUEIDENTIFIER NULL,
+        resolved_at DATETIME2(3) NULL,
+        closed_at DATETIME2(3) NULL,
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_tickets_created_at DEFAULT (SYSUTCDATETIME()),
+        updated_at DATETIME2(3) NOT NULL CONSTRAINT DF_tickets_updated_at DEFAULT (SYSUTCDATETIME()),
+
+        CONSTRAINT UQ_tickets_ticket_code UNIQUE (ticket_code),
+        CONSTRAINT CK_tickets_category CHECK (category IN (N'REQUEST',N'INCIDENT',N'ANOMALY',N'VALIDATION')),
+        CONSTRAINT CK_tickets_priority CHECK (priority IN (N'LOW',N'MEDIUM',N'HIGH',N'CRITICAL')),
+        CONSTRAINT CK_tickets_status CHECK (status IN (N'NEW',N'IN_PROGRESS',N'ON_HOLD',N'RESOLVED',N'CLOSED')),
+
+        CONSTRAINT FK_tickets_emitter_department FOREIGN KEY (emitter_department_id) REFERENCES dbo.departments(id),
+        CONSTRAINT FK_tickets_target_department FOREIGN KEY (target_department_id) REFERENCES dbo.departments(id),
+        CONSTRAINT FK_tickets_creator FOREIGN KEY (creator_id) REFERENCES dbo.users(id),
+        CONSTRAINT FK_tickets_assignee FOREIGN KEY (assignee_id) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_tickets_filter_core' AND object_id = OBJECT_ID(N'dbo.tickets'))
+    CREATE INDEX IX_tickets_filter_core ON dbo.tickets(status, priority, target_department_id, assignee_id, created_at);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_tickets_creator_id' AND object_id = OBJECT_ID(N'dbo.tickets'))
+    CREATE INDEX IX_tickets_creator_id ON dbo.tickets(creator_id);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_tickets_emitter_department_id' AND object_id = OBJECT_ID(N'dbo.tickets'))
+    CREATE INDEX IX_tickets_emitter_department_id ON dbo.tickets(emitter_department_id);
+GO
+
+IF COL_LENGTH('dbo.tickets', 'is_department_broadcast') IS NULL
+BEGIN
+    ALTER TABLE dbo.tickets
+    ADD is_department_broadcast BIT NOT NULL
+        CONSTRAINT DF_tickets_is_department_broadcast DEFAULT (0);
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = N'IX_tickets_target_broadcast_status_assignee_created'
+      AND object_id = OBJECT_ID(N'dbo.tickets')
+)
+BEGIN
+    CREATE INDEX IX_tickets_target_broadcast_status_assignee_created
+    ON dbo.tickets(target_department_id, is_department_broadcast, status, assignee_id, created_at);
+END
+GO
+
+/* =========================================================
+   7) ticket_comments
+   ========================================================= */
+IF OBJECT_ID(N'dbo.ticket_comments', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ticket_comments (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ticket_comments PRIMARY KEY,
+        ticket_id UNIQUEIDENTIFIER NOT NULL,
+        author_id UNIQUEIDENTIFIER NOT NULL,
+        body NVARCHAR(MAX) NOT NULL,
+        is_internal BIT NOT NULL CONSTRAINT DF_ticket_comments_is_internal DEFAULT (0),
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_ticket_comments_created_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT FK_ticket_comments_ticket FOREIGN KEY (ticket_id) REFERENCES dbo.tickets(id),
+        CONSTRAINT FK_ticket_comments_author FOREIGN KEY (author_id) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ticket_comments_ticket_id' AND object_id = OBJECT_ID(N'dbo.ticket_comments'))
+    CREATE INDEX IX_ticket_comments_ticket_id ON dbo.ticket_comments(ticket_id);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ticket_comments_author_id' AND object_id = OBJECT_ID(N'dbo.ticket_comments'))
+    CREATE INDEX IX_ticket_comments_author_id ON dbo.ticket_comments(author_id);
+GO
+
+/* =========================================================
+   8) ticket_attachments
+   ========================================================= */
+IF OBJECT_ID(N'dbo.ticket_attachments', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ticket_attachments (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ticket_attachments PRIMARY KEY,
+        ticket_id UNIQUEIDENTIFIER NOT NULL,
+        filename NVARCHAR(255) NOT NULL,
+        mime_type NVARCHAR(150) NOT NULL,
+        size_bytes INT NOT NULL,
+        content VARBINARY(MAX) NOT NULL,
+        uploaded_by UNIQUEIDENTIFIER NOT NULL,
+        uploaded_at DATETIME2(3) NOT NULL CONSTRAINT DF_ticket_attachments_uploaded_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT FK_ticket_attachments_ticket FOREIGN KEY (ticket_id) REFERENCES dbo.tickets(id),
+        CONSTRAINT FK_ticket_attachments_user FOREIGN KEY (uploaded_by) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ticket_attachments_ticket_id' AND object_id = OBJECT_ID(N'dbo.ticket_attachments'))
+    CREATE INDEX IX_ticket_attachments_ticket_id ON dbo.ticket_attachments(ticket_id);
+GO
+
+/* =========================================================
+   9) ticket_status_history
+   ========================================================= */
+IF OBJECT_ID(N'dbo.ticket_status_history', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ticket_status_history (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ticket_status_history PRIMARY KEY,
+        ticket_id UNIQUEIDENTIFIER NOT NULL,
+        from_status NVARCHAR(20) NULL,
+        to_status NVARCHAR(20) NOT NULL,
+        changed_by UNIQUEIDENTIFIER NOT NULL,
+        reason NVARCHAR(MAX) NULL,
+        changed_at DATETIME2(3) NOT NULL CONSTRAINT DF_ticket_status_history_changed_at DEFAULT (SYSUTCDATETIME()),
+
+        CONSTRAINT CK_ticket_status_history_from CHECK (from_status IS NULL OR from_status IN (N'NEW',N'IN_PROGRESS',N'ON_HOLD',N'RESOLVED',N'CLOSED')),
+        CONSTRAINT CK_ticket_status_history_to CHECK (to_status IN (N'NEW',N'IN_PROGRESS',N'ON_HOLD',N'RESOLVED',N'CLOSED')),
+
+        CONSTRAINT FK_ticket_status_history_ticket FOREIGN KEY (ticket_id) REFERENCES dbo.tickets(id),
+        CONSTRAINT FK_ticket_status_history_user FOREIGN KEY (changed_by) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ticket_status_history_ticket_id' AND object_id = OBJECT_ID(N'dbo.ticket_status_history'))
+    CREATE INDEX IX_ticket_status_history_ticket_id ON dbo.ticket_status_history(ticket_id);
+GO
+
+/* =========================================================
+   10) sla_events
+   ========================================================= */
+IF OBJECT_ID(N'dbo.sla_events', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.sla_events (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_sla_events PRIMARY KEY,
+        ticket_id UNIQUEIDENTIFIER NOT NULL,
+        event_type NVARCHAR(50) NOT NULL,
+        deadline_at DATETIME2(3) NOT NULL,
+        triggered_at DATETIME2(3) NULL,
+        status NVARCHAR(50) NOT NULL CONSTRAINT DF_sla_events_status DEFAULT (N'PENDING'),
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_sla_events_created_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT FK_sla_events_ticket FOREIGN KEY (ticket_id) REFERENCES dbo.tickets(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_sla_events_ticket_id' AND object_id = OBJECT_ID(N'dbo.sla_events'))
+    CREATE INDEX IX_sla_events_ticket_id ON dbo.sla_events(ticket_id);
+GO
+
+/* =========================================================
+   11) notification_queue
+   ========================================================= */
+IF OBJECT_ID(N'dbo.notification_queue', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.notification_queue (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_notification_queue PRIMARY KEY,
+        event_type NVARCHAR(100) NOT NULL,
+        recipient_email NVARCHAR(255) NOT NULL,
+        subject NVARCHAR(255) NOT NULL,
+        payload_json NVARCHAR(MAX) NOT NULL,
+        status NVARCHAR(20) NOT NULL CONSTRAINT DF_notification_queue_status DEFAULT (N'PENDING'),
+        attempts INT NOT NULL CONSTRAINT DF_notification_queue_attempts DEFAULT (0),
+        max_attempts INT NOT NULL CONSTRAINT DF_notification_queue_max_attempts DEFAULT (5),
+        last_error NVARCHAR(MAX) NULL,
+        next_attempt_at DATETIME2(3) NOT NULL CONSTRAINT DF_notification_queue_next_attempt_at DEFAULT (SYSUTCDATETIME()),
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_notification_queue_created_at DEFAULT (SYSUTCDATETIME()),
+        sent_at DATETIME2(3) NULL,
+        CONSTRAINT CK_notification_queue_status CHECK (status IN (N'PENDING',N'RETRY',N'SENT',N'FAILED'))
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_notification_queue_status_next_attempt' AND object_id = OBJECT_ID(N'dbo.notification_queue'))
+    CREATE INDEX IX_notification_queue_status_next_attempt ON dbo.notification_queue(status, next_attempt_at);
+GO
+
+/* =========================================================
+   12) audit_logs
+   ========================================================= */
+IF OBJECT_ID(N'dbo.audit_logs', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.audit_logs (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_audit_logs PRIMARY KEY,
+        actor_id UNIQUEIDENTIFIER NULL,
+        action NVARCHAR(120) NOT NULL,
+        entity_type NVARCHAR(120) NOT NULL,
+        entity_id NVARCHAR(120) NOT NULL,
+        before_json NVARCHAR(MAX) NULL,
+        after_json NVARCHAR(MAX) NULL,
+        ip NVARCHAR(64) NULL,
+        created_at DATETIME2(3) NOT NULL CONSTRAINT DF_audit_logs_created_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT FK_audit_logs_user FOREIGN KEY (actor_id) REFERENCES dbo.users(id)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_logs_created_at' AND object_id = OBJECT_ID(N'dbo.audit_logs'))
+    CREATE INDEX IX_audit_logs_created_at ON dbo.audit_logs(created_at);
+GO
+
+/* =========================================================
+   13) seed de base (departments + SLA)
+   ========================================================= */
+MERGE dbo.departments AS t
+USING (VALUES
+    (N'RH',  N'Ressources Humaines'),
+    (N'FIN', N'Finance'),
+    (N'REC', N'Recouvrement'),
+    (N'IT',  N'Informatique'),
+    (N'COM', N'Commercialisation'),
+    (N'OPS', N'Operations'),
+    (N'DIR', N'Direction')
+) AS s(code, name)
+ON t.code = s.code
+WHEN NOT MATCHED THEN
+    INSERT (code, name, is_active, created_at, updated_at)
+    VALUES (s.code, s.name, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+GO
+
+MERGE dbo.sla_policies AS t
+USING (VALUES
+    (N'LOW',      960, 4800),
+    (N'MEDIUM',   480, 2400),
+    (N'HIGH',     240,  960),
+    (N'CRITICAL',  60,  480)
+) AS s(priority, first_response_minutes, resolution_minutes)
+ON t.priority = s.priority
+WHEN NOT MATCHED THEN
+    INSERT (priority, first_response_minutes, resolution_minutes, is_active, created_at, updated_at)
+    VALUES (s.priority, s.first_response_minutes, s.resolution_minutes, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+GO

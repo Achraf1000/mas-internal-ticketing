@@ -1,0 +1,19 @@
+Backend API:
+cd "c:\Users\user\mas\ticketing application\backend"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+Copy-Item .env.example .env -Force
+python -m pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+Worker notifications :
+cd "c:\Users\user\mas\ticketing application\backend"
+.\.venv\Scripts\Activate.ps1
+while ($true) { python -m app.workers.notification_worker; Start-Sleep -Seconds 60 }
+
+Frontend React :
+cd "c:\Users\user\mas\ticketing application\frontend"
+Copy-Item .env.example .env -Force
+npm install
+npm run dev

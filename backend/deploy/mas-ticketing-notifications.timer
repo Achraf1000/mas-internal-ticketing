@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MAS Ticketing notification worker every minute
+
+[Timer]
+OnCalendar=*:0/1
+AccuracySec=15s
+Persistent=true
+Unit=mas-ticketing-notifications.service
+
+[Install]
+WantedBy=timers.target
+

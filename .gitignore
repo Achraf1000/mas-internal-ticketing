@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node.js / React / Vite
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Configuration locale et secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Donnees, sauvegardes et fichiers generes
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.bacpac
+*.mdf
+*.ldf
+backups/
+exports/
+uploads/
+attachments/
+logs/
+*.log
+
+# Donnees de peuplement internes (comptes temporaires)
+backend/sql/00_temp_users_seed.sql
+
+# IDE / systeme d'exploitation
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
